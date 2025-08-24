@@ -6,14 +6,20 @@ const navItems = {
   '/': {
     name: 'home',
   },
-  '/blog': {
-    name: 'blog',
+  '/IMAC': {
+    name: 'IMAC',
   },
-  '/guide': {
-    name: 'guide',
+  '/Research': {
+    name: 'Research',
   },
-  'https://github.com/notionpresso': {
-    name: 'github',
+    '/Publication': {
+    name: 'Publication',
+  },
+    '/Teaching': {
+    name: 'Teaching',
+  },
+  'https://www.notion.so/imaclab/Intelligent-Mechatronics-and-Control-Lab-76debea4a6a3419d82b20edc2da5e3b0?pvs=4': {
+    name: 'Private web',
   },
 }
 
