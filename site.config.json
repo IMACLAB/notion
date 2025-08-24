@@ -1,0 +1,95 @@
+{
+  "site": {
+    "title": "IMaC Lab",
+    "nav": [
+      {
+        "href": "index.html",
+        "label": "Home"
+      },
+      {
+        "href": "imac.html",
+        "label": "IMaC"
+      },
+      {
+        "href": "members.html",
+        "label": "Member"
+      },
+      {
+        "href": "blog.html",
+        "label": "Blog"
+      }
+    ]
+  },
+  "notion": {
+    "intro_page_id": "1517d80b887d8099b000f0d51e67cb19",
+    "culture_page_id": "1607d80b887d80ce8ba8eaec48f426b4",
+    "members_db_id": "1517d80b887d80c09f60c4cabed08b29",
+    "blog_db_id": "1657d80b887d806b9e20c35ab4f3714a"
+  },
+  "map": {
+    "members": {
+      "title": [
+        "Name",
+        "Title"
+      ],
+      "role": [
+        "Role",
+        "Position"
+      ],
+      "tags": [
+        "Tags",
+        "Keywords"
+      ],
+      "cover": [
+        "Cover",
+        "Photo"
+      ]
+    },
+    "blog": {
+      "title": [
+        "Title",
+        "Name"
+      ],
+      "date": [
+        "Date",
+        "Published"
+      ],
+      "excerpt": [
+        "Excerpt",
+        "Summary",
+        "Description"
+      ],
+      "cover": [
+        "Cover",
+        "Image"
+      ],
+      "slug": [
+        "Slug",
+        "ID"
+      ],
+      "body": [
+        "Body",
+        "Content"
+      ]
+    }
+  },
+  "index": {
+    "tiles": [
+      {
+        "href": "imac.html",
+        "title": "IMaC",
+        "desc": "Introduction / Culture"
+      },
+      {
+        "href": "members.html",
+        "title": "Members",
+        "desc": "People in the lab"
+      },
+      {
+        "href": "blog.html",
+        "title": "Blog",
+        "desc": "News & stories"
+      }
+    ]
+  }
+}

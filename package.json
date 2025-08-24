@@ -1,28 +1,18 @@
 {
+  "name": "imac-static-site",
   "private": true,
+  "type": "module",
+  "version": "0.1.0",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
-  },
-  "devDependencies": {
-    "@notionpresso/cli": "^0.0.2",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.47",
-    "tailwindcss": "^3.0.0"
+    "fetch": "node fetch-notion.mjs",
+    "build": "node build.mjs",
+    "preview": "npx http-server dist -p 8000 -c-1",
+    "all": "npm run fetch && npm run build"
   },
   "dependencies": {
-    "@giscus/react": "^3.0.0",
-    "@notionpresso/react": "^0.0.5",
-    "@types/react": "18.2.55",
-    "@types/react-dom": "18.2.19",
-    "geist": "1.2.2",
-    "next": "canary",
-    "next-mdx-remote": "^4.4.1",
-    "next-themes": "^0.3.0",
-    "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "sugar-high": "^0.6.0",
-    "typescript": "5.3.3"
+    "@notionhq/client": "^2.2.15"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
   }
 }
