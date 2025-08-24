@@ -81,7 +81,7 @@ export default async function Blog({ params }) {
         }}
       />
       <NotionRenderer post={post} />
-      <Comment />
+      {<Comment />}
     </section>
   )
 }
