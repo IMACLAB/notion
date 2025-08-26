@@ -1,13 +1,15 @@
 // fetch-notion.mjs
-// Notion API → JSON/이미지 캐시 (+ Incremental sync)
-// - Incremental: last_edited_time 기준으로 변경분만 수집
-// - 이미지/파일 로컬 캐시: 만료 URL 문제 방지
+// Notion API → JSON/이미지 캐시 (Incremental sync + Stable cache)
+// - Incremental: last_edited_time 기준으로 변경분만 조회
+// - 이미지/파일 캐시: 서명 URL이 바뀌어도 콘텐츠 해시로 재사용 (중복 다운로드 방지)
 // - ID 정규화: URL/하이픈 포함도 허용
-// - 안전 마진: 마지막 동기시각 - 2분
+// - FULL_RECONCILE=1 -> 풀 스캔(삭제/아카이브 정합성)
+// - FETCH_BLOCKS_FOR_DB=1 -> DB 행 상세 블록까지 수집(무거움)
 // ----------------------------------------------------------------
 
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@notionhq/client'
 
@@ -15,11 +17,11 @@ import { Client } from '@notionhq/client'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname  = path.dirname(__filename)
 
-const ROOT     = __dirname
-const OUT_DIR  = path.join(ROOT, 'notion-data')
-const IMG_DIR  = path.join(ROOT, 'images')
-const CACHE_DIR= path.join(ROOT, '.cache')
-const STATE_F  = path.join(CACHE_DIR, 'state.json')
+const ROOT      = __dirname
+const OUT_DIR   = path.join(ROOT, 'notion-data')
+const IMG_DIR   = path.join(ROOT, 'images')
+const CACHE_DIR = path.join(ROOT, '.cache')
+const STATE_F   = path.join(CACHE_DIR, 'state.json')
 
 // Ensure dirs
 for (const d of [OUT_DIR, IMG_DIR, CACHE_DIR]) fs.mkdirSync(d, { recursive: true })
@@ -49,7 +51,7 @@ async function withRetry(fn, tries = 5, label = 'request') {
       return await fn()
     } catch (e) {
       n++
-      const wait = Math.min(2000, 250 * 2 ** (n - 1))
+      const wait = Math.min(2500, 250 * 2 ** (n - 1))
       const msg = e?.body?.message || e?.message || String(e)
       if (n >= tries) {
         console.error(`❌ ${label} failed after ${tries} tries:`, msg)
@@ -71,11 +73,18 @@ function normalizeId(input) {
   return raw.length === 32 ? raw.toLowerCase() : null
 }
 
-// State (for incremental)
+// State (for incremental + cache)
 function loadState() {
-  if (!fs.existsSync(STATE_F)) return { lastSyncISO: null, pages: {}, dbItems: {} }
-  try { return JSON.parse(fs.readFileSync(STATE_F, 'utf-8')) }
-  catch { return { lastSyncISO: null, pages: {}, dbItems: {} } }
+  if (!fs.existsSync(STATE_F)) return { lastSyncISO: null, pages: {}, dbItems: {}, images: {} }
+  try {
+    const s = JSON.parse(fs.readFileSync(STATE_F, 'utf-8'))
+    if (!s.images) s.images = {}
+    if (!s.pages) s.pages = {}
+    if (!s.dbItems) s.dbItems = {}
+    return s
+  } catch {
+    return { lastSyncISO: null, pages: {}, dbItems: {}, images: {} }
+  }
 }
 function saveState(state) {
   fs.writeFileSync(STATE_F, JSON.stringify(state, null, 2))
@@ -97,29 +106,52 @@ function safeExtFromUrl(u, fallback = 'bin') {
     return fallback
   }
 }
+const sha1 = (buf) => crypto.createHash('sha1').update(buf).digest('hex')
 
-async function downloadFile(url, fnameHint = 'asset') {
-  if (!url) return null
+// Stable-cache download: key is stable (page/block/property-based), filename uses content hash
+async function downloadFileCached(key, url, fnameHint, state) {
+  if (!url) return state.images[key]?.local || null
+
+  // Reuse if already cached and file exists
+  const cached = state.images[key]
+  if (cached?.local) {
+    const localPath = cached.local.startsWith('./') ? cached.local.slice(2) : cached.local
+    const abs = path.join(ROOT, localPath)
+    if (fs.existsSync(abs)) return cached.local
+  }
+
+  // Download
   try {
-    const ext = safeExtFromUrl(url, 'bin')
-    const name = `${fnameHint}-${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`
-    const dst = path.join(IMG_DIR, name)
     const res = await fetch(url)
     if (!res.ok) {
-      console.warn('⚠️ download failed (status)', res.status, url)
-      return null
+      console.warn('⚠️ download failed', res.status, url)
+      return cached?.local || null
     }
     const buf = Buffer.from(await res.arrayBuffer())
-    fs.writeFileSync(dst, buf)
-    return `./images/${name}`
+    const hash = sha1(buf)
+    const ext = safeExtFromUrl(url, 'bin')
+    const name = `${fnameHint}-${hash.slice(0, 12)}.${ext}`
+    const localRel = `./images/${name}`
+    const dst = path.join(IMG_DIR, name)
+
+    if (!fs.existsSync(dst)) fs.writeFileSync(dst, buf)
+
+    state.images[key] = {
+      local: localRel,
+      hash: `sha1:${hash}`,
+      size: buf.length,
+      updated: new Date().toISOString(),
+      last_url: url
+    }
+    return localRel
   } catch (e) {
     console.warn('⚠️ download error', e?.message || e)
-    return null
+    return cached?.local || null
   }
 }
 
 // ---------------- Notion fetchers ----------------
-async function listBlocks(blockId) {
+async function listBlocks(blockId, state) {
   const all = []
   let cursor
   while (true) {
@@ -135,25 +167,26 @@ async function listBlocks(blockId) {
 
   // Recursively collect children & cache images/files inside blocks
   for (const b of all) {
-    if (b.has_children) b.children = await listBlocks(b.id)
+    if (b.has_children) b.children = await listBlocks(b.id, state)
 
     if (b.type === 'image') {
       const url = b.image?.file?.url || b.image?.external?.url
-      const local = await downloadFile(url, 'image')
+      const key = `block:${b.id}:image`
+      const local = await downloadFileCached(key, url, 'image', state)
       if (local) b.image.local = local
     }
 
-    // Optional: file block (if used)
     if (b.type === 'file') {
       const url = b.file?.file?.url || b.file?.external?.url
-      const local = await downloadFile(url, 'file')
+      const key = `block:${b.id}:file`
+      const local = await downloadFileCached(key, url, 'file', state)
       if (local) b.file.local = local
     }
   }
   return all
 }
 
-async function fetchPageIfChanged(pageId, aliasOut = null, state) {
+async function fetchPageIfChanged(pageId, aliasOut, state) {
   const meta = await withRetry(
     () => notion.pages.retrieve({ page_id: pageId }),
     5,
@@ -169,20 +202,20 @@ async function fetchPageIfChanged(pageId, aliasOut = null, state) {
   }
 
   console.log(`→ page changed: ${pageId}`)
-  const blocks = await listBlocks(pageId)
+  const blocks = await listBlocks(pageId, state)
 
-  // Cover cache (optional)
+  // Cover cache
   const cov = meta?.cover?.file?.url || meta?.cover?.external?.url
-  const localCover = cov ? await downloadFile(cov, 'cover') : (prev?.cover_local || null)
+  const coverKey = `page:${meta.id}:cover`
+  const localCover = cov
+    ? await downloadFileCached(coverKey, cov, 'cover', state)
+    : (state.images[coverKey]?.local || prev?.cover_local || null)
 
   const payload = { page: meta, blocks, cover_local: localCover }
 
   // Save with alias (for easier consumption)
-  if (aliasOut) {
-    fs.writeFileSync(path.join(OUT_DIR, `page-${aliasOut}.json`), JSON.stringify(payload, null, 2))
-  } else {
-    fs.writeFileSync(path.join(OUT_DIR, `page-${pageId}.json`), JSON.stringify(payload, null, 2))
-  }
+  const fname = aliasOut ? `page-${aliasOut}.json` : `page-${pageId}.json`
+  fs.writeFileSync(path.join(OUT_DIR, fname), JSON.stringify(payload, null, 2))
 
   state.pages[pageId] = {
     last_edited_time: meta.last_edited_time,
@@ -243,14 +276,20 @@ async function syncDatabase(database_id, outName, state, options = {}) {
   for (const p of changedRows) {
     // Cover to local
     const cov = p?.cover?.file?.url || p?.cover?.external?.url
-    if (cov) p.cover_local = await downloadFile(cov, 'cover')
+    if (cov) {
+      const key = `page:${p.id}:cover`
+      p.cover_local = await downloadFileCached(key, cov, 'cover', state)
+    }
 
     // Files property: download all
-    for (const [k, prop] of Object.entries(p.properties || {})) {
+    for (const [propName, prop] of Object.entries(p.properties || {})) {
       if (prop?.type === 'files' && Array.isArray(prop.files)) {
-        for (const f of prop.files) {
+        for (let i = 0; i < prop.files.length; i++) {
+          const f = prop.files[i]
           const url = f?.file?.url || f?.external?.url
-          if (url) f.local = await downloadFile(url, 'file')
+          const key = `page:${p.id}:prop:${propName}:${i}`
+          const local = await downloadFileCached(key, url, 'file', state)
+          if (local) f.local = local
         }
       }
     }
@@ -258,7 +297,7 @@ async function syncDatabase(database_id, outName, state, options = {}) {
     // Optional: fetch blocks for each row detail page (expensive)
     if (fetchBlocksForRows) {
       try {
-        p.blocks = await listBlocks(p.id)
+        p.blocks = await listBlocks(p.id, state)
       } catch (e) {
         console.warn('⚠️ listBlocks(row) failed', p.id, e?.message || e)
       }
@@ -287,6 +326,7 @@ async function main() {
   // Normalize IDs (accept URL/dashed/raw)
   const idsInput = CFG?.notion || {}
   const ids = {
+    home_page_id: normalizeId(idsInput.home_page_id),
     intro_page_id:   normalizeId(idsInput.intro_page_id),
     culture_page_id: normalizeId(idsInput.culture_page_id),
     members_db_id:   normalizeId(idsInput.members_db_id),
@@ -302,6 +342,12 @@ async function main() {
   const fetchBlocksForRows = process.env.FETCH_BLOCKS_FOR_DB === '1' // optional heavy mode
 
   // PAGES
+  if (ids.home_page_id) {
+    await fetchPageIfChanged(ids.home_page_id, 'home', state)
+  } else {
+    console.warn('⚠️ home_page_id missing; skip')
+  }
+
   if (ids.intro_page_id) {
     await fetchPageIfChanged(ids.intro_page_id, 'introduction', state)
   } else {
